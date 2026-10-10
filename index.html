@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Musical Overtone & Harmonic Series Explorer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 min-h-screen text-gray-100 flex flex-col">
+  <header class="bg-gray-900 border-b border-gray-800 px-4 py-4">
+    <div class="max-w-4xl mx-auto">
+      <h1 class="text-xl font-bold tracking-tight">Musical Overtone & Harmonic Series Explorer</h1>
+      <p class="text-gray-400 text-sm">Visualise and play the harmonic series using Web Audio API</p>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto w-full px-4 py-6 flex flex-col gap-6">
+    <!-- Audio warning -->
+    <div id="audioWarning" class="hidden bg-yellow-900 border border-yellow-700 text-yellow-200 rounded-xl px-4 py-3 text-sm">
+      Web Audio API is not available in this browser. Playback is disabled; the table and chart remain functional.
+    </div>
+
+    <!-- Controls -->
+    <section class="bg-gray-900 rounded-2xl border border-gray-800 p-5" aria-label="Fundamental frequency controls">
+      <div class="flex flex-col sm:flex-row gap-4 items-end">
+        <div>
+          <label for="fundFreq" class="block text-sm text-gray-400 mb-1">Fundamental Frequency (Hz)</label>
+          <input id="fundFreq" type="number" min="20" max="2000" value="220"
+            class="w-32 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500"
+            aria-label="Fundamental frequency in Hz" />
+        </div>
+        <div class="text-sm text-gray-400">
+          Note: <span id="fundNote" class="text-white font-semibold">A3</span>
+        </div>
+        <div class="flex gap-2 flex-wrap">
+          <button id="playAllBtn" class="bg-indigo-700 hover:bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors" aria-label="Play all enabled harmonics simultaneously">Play All</button>
+          <button id="playEachBtn" class="bg-violet-700 hover:bg-violet-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors" aria-label="Play each harmonic in sequence">Play Each</button>
+          <button id="playChordBtn" class="bg-emerald-700 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors" aria-label="Play harmonics 1, 2 and 4 as a chord">Play Octave Chord</button>
+          <button id="stopBtn" class="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors" aria-label="Stop all playback">Stop</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Spectrum Chart -->
+    <section class="bg-gray-900 rounded-2xl border border-gray-800 p-5" aria-label="Amplitude spectrum chart">
+      <h2 class="font-semibold text-gray-200 mb-3">Amplitude Spectrum</h2>
+      <canvas id="spectrumChart" width="800" height="160" class="w-full rounded-lg bg-gray-950" aria-label="Bar chart of harmonic amplitudes" role="img"></canvas>
+    </section>
+
+    <!-- Overtone Table -->
+    <section class="bg-gray-900 rounded-2xl border border-gray-800 p-5 overflow-x-auto" aria-label="Overtone series table">
+      <h2 class="font-semibold text-gray-200 mb-3">Overtone Series</h2>
+      <table class="w-full text-sm" role="table" aria-label="Harmonic series details">
+        <thead>
+          <tr class="text-gray-400 border-b border-gray-800">
+            <th class="text-left py-2 pr-4 font-medium">n</th>
+            <th class="text-left py-2 pr-4 font-medium">Frequency (Hz)</th>
+            <th class="text-left py-2 pr-4 font-medium">Note</th>
+            <th class="text-left py-2 pr-4 font-medium">Cents deviation</th>
+            <th class="text-left py-2 pr-4 font-medium">Interval from fundamental</th>
+            <th class="text-left py-2 pr-4 font-medium">Amplitude</th>
+            <th class="text-right py-2 font-medium">Active</th>
+          </tr>
+        </thead>
+        <tbody id="overtoneTable"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script>
+    const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+    const INTERVAL_NAMES = [
+      'Unison','Octave','Perfect 5th + octave','2 octaves','Maj 3rd + 2 octaves',
+      'Perf 5th + 2 octaves','Harmonic 7th + 2 oct','3 octaves','Maj 2nd + 3 oct',
+      'Maj 3rd + 3 oct','Aug 4th + 3 oct (~)','Perf 5th + 3 oct','Maj 6th + 3 oct (~)',
+      'Harmonic 7th + 3 oct (~)','Maj 7th + 3 oct','4 octaves'
+    ];
+
+    let audioCtx = null;
+    let enabled = Array(16).fill(true);
+    let stopRequested = false;
+
+    function getAudioCtx() {
+      if (audioCtx && audioCtx.state !== 'closed') return audioCtx;
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        return audioCtx;
+      } catch(e) {
+        document.getElementById('audioWarning').classList.remove('hidden');
+        return null;
+      }
+    }
+
+    function freqToMidi(f) {
+      return 69 + 12 * Math.log2(f / 440);
+    }
+
+    function midiToNoteName(midi) {
+      const rounded = Math.round(midi);
+      const oct = Math.floor(rounded / 12) - 1;
+      const name = NOTE_NAMES[((rounded % 12) + 12) % 12];
+      return `${name}${oct}`;
+    }
+
+    function centsDev(f) {
+      const midi = freqToMidi(f);
+      const rounded = Math.round(midi);
+      return Math.round((midi - rounded) * 100);
+    }
+
+    function getFundamental() {
+      const v = parseFloat(document.getElementById('fundFreq').value);
+      if (isNaN(v) || v < 20 || v > 2000) return 220;
+      return v;
+    }
+
+    function updateFundNote() {
+      const f = getFundamental();
+      document.getElementById('fundNote').textContent = midiToNoteName(freqToMidi(f));
+    }
+
+    function playTone(ctx, freq, amplitude, startTime, duration) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, startTime);
+      gain.gain.linearRampToValueAtTime(amplitude * 0.3, startTime + 0.02);
+      gain.gain.setValueAtTime(amplitude * 0.3, startTime + duration - 0.05);
+      gain.gain.linearRampToValueAtTime(0, startTime + duration);
+      osc.start(startTime);
+      osc.stop(startTime + duration);
+    }
+
+    document.getElementById('playAllBtn').addEventListener('click', () => {
+      const ctx = getAudioCtx(); if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      const f0 = getFundamental();
+      const t = ctx.currentTime + 0.05;
+      for (let n = 1; n <= 16; n++) {
+        if (!enabled[n-1]) continue;
+        playTone(ctx, f0 * n, 1/n, t, 2.0);
+      }
+    });
+
+    document.getElementById('playEachBtn').addEventListener('click', async () => {
+      const ctx = getAudioCtx(); if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      stopRequested = false;
+      const f0 = getFundamental();
+      for (let n = 1; n <= 16; n++) {
+        if (stopRequested) break;
+        if (!enabled[n-1]) continue;
+        const t = ctx.currentTime + 0.05;
+        playTone(ctx, f0 * n, 1/n, t, 0.5);
+        await new Promise(r => setTimeout(r, 400));
+      }
+    });
+
+    document.getElementById('playChordBtn').addEventListener('click', () => {
+      const ctx = getAudioCtx(); if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      const f0 = getFundamental();
+      const t = ctx.currentTime + 0.05;
+      [1, 2, 4].forEach(n => playTone(ctx, f0 * n, 1/n, t, 2.5));
+    });
+
+    document.getElementById('stopBtn').addEventListener('click', () => {
+      stopRequested = true;
+      try { if (audioCtx) { audioCtx.close(); audioCtx = null; } } catch(e) {}
+    });
+
+    function renderTable() {
+      const f0 = getFundamental();
+      const tbody = document.getElementById('overtoneTable');
+      tbody.innerHTML = '';
+      for (let n = 1; n <= 16; n++) {
+        const freq = f0 * n;
+        const note = midiToNoteName(freqToMidi(freq));
+        const cents = centsDev(freq);
+        const interval = INTERVAL_NAMES[n - 1] || '';
+        const amp = (1/n).toFixed(3);
+        const isEnabled = enabled[n-1];
+
+        const tr = document.createElement('tr');
+        tr.className = `border-b border-gray-800 ${isEnabled ? '' : 'opacity-40'}`;
+
+        const cells = [
+          { val: n, cls: 'font-mono font-bold text-gray-300' },
+          { val: freq.toFixed(2), cls: 'font-mono text-amber-300' },
+          { val: note, cls: 'font-semibold text-emerald-300' },
+          { val: (cents >= 0 ? '+' : '') + cents + ' ¢', cls: `font-mono ${Math.abs(cents) > 10 ? 'text-rose-400' : 'text-gray-300'}` },
+          { val: interval, cls: 'text-sky-300' },
+          { val: amp, cls: 'font-mono text-gray-400' }
+        ];
+
+        cells.forEach(c => {
+          const td = document.createElement('td');
+          td.className = `py-2 pr-4 ${c.cls}`;
+          td.textContent = c.val;
+          tr.appendChild(td);
+        });
+
+        // Play button
+        const tdPlay = document.createElement('td');
+        tdPlay.className = 'py-1 pr-2';
+        const playBtn = document.createElement('button');
+        playBtn.className = 'bg-gray-700 hover:bg-indigo-600 text-gray-300 hover:text-white px-2 py-1 rounded text-xs transition-colors';
+        playBtn.textContent = '▶';
+        playBtn.setAttribute('aria-label', `Play harmonic ${n}`);
+        playBtn.addEventListener('click', () => {
+          const ctx = getAudioCtx(); if (!ctx) return;
+          if (ctx.state === 'suspended') ctx.resume();
+          playTone(ctx, f0 * n, 1/n, ctx.currentTime + 0.05, 1.0);
+        });
+        tdPlay.appendChild(playBtn);
+        tr.appendChild(tdPlay);
+
+        // Toggle
+        const tdToggle = document.createElement('td');
+        tdToggle.className = 'py-1 text-right';
+        const toggle = document.createElement('button');
+        toggle.className = `w-8 h-5 rounded-full transition-colors ${isEnabled ? 'bg-indigo-600' : 'bg-gray-700'}`;
+        toggle.setAttribute('role', 'switch');
+        toggle.setAttribute('aria-checked', isEnabled ? 'true' : 'false');
+        toggle.setAttribute('aria-label', `Toggle harmonic ${n}`);
+        toggle.addEventListener('click', () => {
+          enabled[n-1] = !enabled[n-1];
+          renderTable();
+          drawChart();
+        });
+        const knob = document.createElement('span');
+        knob.className = `block w-3 h-3 rounded-full bg-white shadow m-1 transition-transform ${isEnabled ? 'translate-x-3' : ''}`;
+        knob.style.transform = isEnabled ? 'translateX(12px)' : 'translateX(0)';
+        toggle.appendChild(knob);
+        tdToggle.appendChild(toggle);
+        tr.appendChild(tdToggle);
+
+        tbody.appendChild(tr);
+      }
+    }
+
+    function drawChart() {
+      const canvas = document.getElementById('spectrumChart');
+      const ctx = canvas.getContext('2d');
+      const W = canvas.width, H = canvas.height;
+      ctx.clearRect(0, 0, W, H);
+
+      const f0 = getFundamental();
+      const barW = Math.floor(W / 18);
+      const gap = Math.floor(W / 100);
+      const maxH = H - 30;
+
+      for (let n = 1; n <= 16; n++) {
+        const amp = enabled[n-1] ? 1/n : 0;
+        const bH = Math.round(amp * maxH);
+        const x = Math.floor(n * (W / 17)) - barW / 2;
+        const y = H - bH - 20;
+
+        // Gradient bar
+        const grad = ctx.createLinearGradient(0, y, 0, H - 20);
+        if (enabled[n-1]) {
+          grad.addColorStop(0, `hsl(${200 + n * 10}, 80%, 60%)`);
+          grad.addColorStop(1, `hsl(${200 + n * 10}, 60%, 35%)`);
+          ctx.fillStyle = grad;
+        } else {
+          ctx.fillStyle = '#374151';
+        }
+        ctx.beginPath();
+        ctx.roundRect(x, y, barW - gap, bH, 3);
+        ctx.fill();
+
+        // Label
+        ctx.fillStyle = '#9ca3af';
+        ctx.font = '11px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(n, x + (barW - gap) / 2, H - 4);
+
+        // Freq label on top
+        if (enabled[n-1] && bH > 20) {
+          ctx.fillStyle = '#e5e7eb';
+          ctx.font = '9px monospace';
+          ctx.fillText(Math.round(f0 * n), x + (barW - gap) / 2, y - 3);
+        }
+      }
+
+      // Axis
+      ctx.fillStyle = '#374151';
+      ctx.fillRect(0, H - 20, W, 1);
+    }
+
+    document.getElementById('fundFreq').addEventListener('input', () => {
+      updateFundNote();
+      renderTable();
+      drawChart();
+    });
+
+    updateFundNote();
+    renderTable();
+    drawChart();
+    // Check audio support early
+    try { new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {
+      document.getElementById('audioWarning').classList.remove('hidden');
+    }
+  </script>
+</body>
+</html>
